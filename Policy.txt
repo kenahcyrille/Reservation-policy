@@ -1,0 +1,88 @@
+HPC Reservation Policy
+
+1. Purpose
+This policy defines the rules and procedures for creating node reservations in the HPC environment. Reservations are intended to guarantee resources for projects, benchmarks, workshops, or workflows that require predictable access to compute nodes.
+
+2. Scope
+This policy applies to:
+- Benchmarking and performance qualification jobs.
+- Time-sensitive workloads (e.g., proposal deadlines, large coordinated runs).
+- Training sessions, classes, or workshops.
+- Internal system tests by administrators.
+
+3. Key Variables
+Reservations are calculated using three primary variables:
+- Q: Number of jobs to run.
+- R: Number of nodes required.
+- H: Duration of the reservation (hours).
+
+For each job type:
+- N: Nodes per job.
+- S: Average runtime per job (hours).
+- NH: Node-hours per job = N × S.
+
+4. Reservation Calculations
+Reservations are sized using the following formulas:
+- Jobs formula: Q = floor((R × H) / NH)
+- Nodes formula: R = ceil((Q × NH) / H)
+- Time formula: H = (Q × NH) / R
+
+Note:
+- floor = round down to nearest whole number (cannot run a fraction of a job).
+- ceil = round up to nearest whole number (cannot reserve a fraction of a node).
+- Administrators may add a 10–20% buffer to account for performance variability.
+
+5. Reservation Approval
+- Reservations must be requested at least 3 business days in advance.
+- Users must provide:
+  - Number of jobs (Q).
+  - Nodes per job (N).
+  - Average job runtime (S).
+  - Desired reservation duration or start time.
+- Requests will be reviewed by system administrators.
+
+6. Reservation Limits
+- Minimum reservation size: 2 nodes, 1 hour.
+- Maximum reservation size: 25% of cluster nodes, unless approved by management.
+- Maximum duration: 24 hours, unless exceptional use-case is documented.
+
+7. Reservation Mechanics
+Reservations are implemented via the scheduler (e.g., Slurm) using scontrol create reservation.
+
+Example:
+scontrol create reservation \
+  StartTime=2025-10-01T09:00:00 Duration=08:00:00 \
+  PartitionName=reserved TRES=Nodes=40 \
+  Users=projectA,projectB Accounts=projA \
+  Flags=Ignore_Jobs
+
+Optional QoS constraints may be applied with sacctmgr:
+sacctmgr modify qos rsv set GrpTRES=nodes=40 MaxJobsPU=15
+
+8. Reservation Enforcement
+- Jobs submitted to a reservation must specify the correct partition/QoS.
+- Jobs not meeting the criteria will not run inside the reserved window.
+- Administrators may revoke or resize reservations if cluster stability, utilization, or fairness is at risk.
+
+9. Examples
+Example A: How many jobs fit?
+- Each job: 8 nodes × 2 hours = 16 node-hours.
+- Reservation: 40 nodes × 6 hours = 240 node-hours.
+- Jobs: Q = floor(240 / 16) = 15.
+
+Example B: How many nodes are needed?
+- Target: 25 jobs, each 4 nodes × 1.5 hours = 6 node-hours/job.
+- Total = 150 node-hours.
+- Duration = 8 hours.
+- Nodes: R = ceil(150 / 8) = 19.
+
+Example C: How much time is needed?
+- Target: 30 jobs, each 8 nodes × 1.75 hours = 14 node-hours/job.
+- Total = 420 node-hours.
+- Reserved nodes = 48.
+- Time: H = 420 / 48 ≈ 8.75 hours.
+
+10. Governance
+- Reservations are tracked in an administrative log.
+- Abandoned or unused reservations may lead to suspension of future requests.
+- Repeated misuse may result in penalties.

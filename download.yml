@@ -1,0 +1,115 @@
+---
+- name: Download and install latest RPMs from a text list
+  hosts: target_hosts
+  become: yes
+  gather_facts: false
+
+  vars:
+    # ---- Controller-side input ----
+    # Path to the package list on the CONTROL NODE (one package per line; names or NEVRA both OK)
+    package_list_path: ./packages.txt
+
+    # ---- Target-side behavior ----
+    download_dir: /var/tmp/rpm_downloads
+    download_dependencies: true           # use --resolve to pull deps
+    install_after_download: true          # install after downloading
+    desired_state: latest                 # present | latest
+    allow_downgrade: true                 # allow NEVRA pinning if needed
+    fetch_to_controller: false            # copy downloaded RPMs back to controller
+    reboot_if_needed: true                # reboot if kernel/userspace requires it
+    batch_size: 100                       # batch to avoid very long command lines
+
+  # Read and normalize the list on the CONTROLLER
+  pre_tasks:
+    - name: Read package list from controller
+      set_fact:
+        pkgs_raw: "{{ lookup('file', package_list_path) }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: Normalize package list (strip comments/empties)
+      set_fact:
+        pkgs: >-
+          {{ pkgs_raw.splitlines()
+             | map('regex_replace', '\\s+#.*$', '')   # strip end-of-line comments
+             | map('trim')
+             | select('match','\\S')                  # non-empty lines only
+             | list }}
+      run_once: true
+
+    - name: Assert we have packages to process
+      assert:
+        that: pkgs | length > 0
+        fail_msg: "Your package list is empty after normalization: {{ package_list_path }}"
+
+    - name: Show package count
+      debug:
+        msg: "Packages in list: {{ pkgs | length }}"
+      run_once: true
+
+  tasks:
+    - name: Ensure tools for 'dnf download' and reboot check are present
+      ansible.builtin.dnf:
+        name:
+          - dnf-plugins-core        # provides 'dnf download'
+          - yum-utils               # provides 'needs-restarting' on EL8/9
+        state: present
+
+    - name: Create download directory on target
+      ansible.builtin.file:
+        path: "{{ download_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download latest RPMs (batched)
+      ansible.builtin.command: >
+        dnf download
+        {{ '--resolve' if download_dependencies else '' }}
+        --downloaddir={{ download_dir }}
+        {{ item | join(' ') }}
+      args:
+        warn: false
+      loop: "{{ pkgs | batch(batch_size) | list }}"
+      register: dl_results
+      changed_when: true
+      when: pkgs | length > 0
+
+    - name: Install packages after download (state={{ desired_state }})
+      ansible.builtin.dnf:
+        name: "{{ pkgs }}"
+        state: "{{ desired_state }}"
+        allow_downgrade: "{{ allow_downgrade }}"
+      when:
+        - install_after_download
+        - pkgs | length > 0
+
+    - name: Optionally discover downloaded RPMs
+      ansible.builtin.find:
+        paths: "{{ download_dir }}"
+        patterns: "*.rpm"
+      register: found_rpms
+      when: fetch_to_controller
+
+    - name: Optionally fetch RPMs back to controller
+      ansible.builtin.fetch:
+        src: "{{ item.path }}"
+        dest: "./artifacts/"
+        flat: false
+      loop: "{{ found_rpms.files | default([]) }}"
+      when: fetch_to_controller
+
+    - name: Check if reboot is required
+      ansible.builtin.command: needs-restarting -r
+      register: needs_reboot
+      changed_when: false
+      failed_when: false
+      when: reboot_if_needed
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        msg: "Rebooting after package updates"
+        reboot_timeout: 1800
+      when:
+        - reboot_if_needed
+        - needs_reboot.rc is defined
+        - needs_reboot.rc != 0

@@ -1,0 +1,52 @@
+---
+- name: Download and install latest packages locally (RHEL 9)
+  hosts: localhost
+  connection: local
+  gather_facts: false        # avoid sudo on setup; we elevate only where needed
+  become: false
+
+  vars:
+    # keep the list next to this playbook; one package per line, '#' comments OK
+    package_list_path: "{{ playbook_dir }}/packages.txt"
+    download_dir: /var/tmp/rpm_downloads
+    download_dependencies: true   # add --resolve to pull deps
+
+    package_list: >-
+      {{
+        lookup('file', package_list_path)
+        .splitlines()
+        | map('trim')
+        | reject('match','^#')
+        | reject('equalto','')
+        | list
+      }}
+
+  tasks:
+    - name: Ensure dnf download plugin is installed
+      become: yes
+      ansible.builtin.dnf:
+        name: dnf-plugins-core
+        state: present
+
+    - name: Create directory for downloads
+      become: yes
+      ansible.builtin.file:
+        path: "{{ download_dir }}"
+        state: directory
+        mode: "0755"
+
+    # NOTE: no "args: warn: false" here (older Ansible doesn’t support it)
+    - name: Download the latest RPMs (one by one)
+      ansible.builtin.command: >
+        dnf -y download
+        {{ '--resolve' if download_dependencies else '' }}
+        --downloaddir={{ download_dir }}
+        {{ item }}
+      loop: "{{ package_list }}"
+      changed_when: true
+
+    - name: Install/Update to latest versions
+      become: yes
+      ansible.builtin.dnf:
+        name: "{{ package_list }}"
+        state: latest

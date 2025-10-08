@@ -2,40 +2,33 @@
 - name: Download and install latest packages locally
   hosts: localhost
   connection: local
-  become: true
-  gather_facts: false
+  gather_facts: false          # <- prevents the setup task (the source of the error)
+  become: false                # <- no global sudo; we add it per task
 
   vars:
-    # Path to the package list on this machine
-    package_list_path: ./packages.txt
-    # Where to store downloaded RPMs
+    package_list_path: /full/path/to/packages.txt   # <-- set absolute path
     download_dir: /var/tmp/rpm_downloads
-    # Pull dependencies automatically
     download_dependencies: true
 
+    package_list: >-
+      {{
+        lookup('file', package_list_path)
+        .splitlines()
+        | map('trim')
+        | reject('match','^#')
+        | reject('equalto','')
+        | list
+      }}
+
   tasks:
-    - name: Read package list from local file
-      set_fact:
-        package_list: >-
-          {{
-            lookup('file', package_list_path)
-            .splitlines()
-            | map('trim')
-            | reject('match', '^#')
-            | reject('equalto', '')
-            | list
-          }}
-
-    - name: Display package list
-      debug:
-        var: package_list
-
     - name: Ensure dnf download plugin is installed
-      ansible.builtin.package:
+      become: yes
+      ansible.builtin.dnf:
         name: dnf-plugins-core
         state: present
 
     - name: Create directory for downloads
+      become: yes
       ansible.builtin.file:
         path: "{{ download_dir }}"
         state: directory
@@ -52,17 +45,8 @@
       loop: "{{ package_list }}"
       changed_when: true
 
-    - name: Install or update packages to latest versions
+    - name: Install/Update to latest versions
+      become: yes
       ansible.builtin.dnf:
         name: "{{ package_list }}"
         state: latest
-
-    - name: Report number of downloaded RPMs
-      ansible.builtin.find:
-        paths: "{{ download_dir }}"
-        patterns: "*.rpm"
-      register: found_rpms
-
-    - name: Show summary
-      debug:
-        msg: "Downloaded {{ found_rpms.files | length }} RPMs to {{ download_dir }}"

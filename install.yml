@@ -1,0 +1,68 @@
+---
+- name: Download and install latest packages locally
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  vars:
+    # Path to the package list on this machine
+    package_list_path: ./packages.txt
+    # Where to store downloaded RPMs
+    download_dir: /var/tmp/rpm_downloads
+    # Pull dependencies automatically
+    download_dependencies: true
+
+  tasks:
+    - name: Read package list from local file
+      set_fact:
+        package_list: >-
+          {{
+            lookup('file', package_list_path)
+            .splitlines()
+            | map('trim')
+            | reject('match', '^#')
+            | reject('equalto', '')
+            | list
+          }}
+
+    - name: Display package list
+      debug:
+        var: package_list
+
+    - name: Ensure dnf download plugin is installed
+      ansible.builtin.package:
+        name: dnf-plugins-core
+        state: present
+
+    - name: Create directory for downloads
+      ansible.builtin.file:
+        path: "{{ download_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Download the latest RPMs for listed packages
+      ansible.builtin.command: >
+        dnf download
+        {{ '--resolve' if download_dependencies else '' }}
+        --downloaddir={{ download_dir }}
+        {{ item }}
+      args:
+        warn: false
+      loop: "{{ package_list }}"
+      changed_when: true
+
+    - name: Install or update packages to latest versions
+      ansible.builtin.dnf:
+        name: "{{ package_list }}"
+        state: latest
+
+    - name: Report number of downloaded RPMs
+      ansible.builtin.find:
+        paths: "{{ download_dir }}"
+        patterns: "*.rpm"
+      register: found_rpms
+
+    - name: Show summary
+      debug:
+        msg: "Downloaded {{ found_rpms.files | length }} RPMs to {{ download_dir }}"

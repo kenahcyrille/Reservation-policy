@@ -1,0 +1,56 @@
+---
+- name: Download and install latest packages locally (RHEL 9)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false   # keep false globally; elevate only on privileged tasks
+
+  vars:
+    package_list_path: /home/entds.ngisn.com/4n64322/ansible/rpmlist.txt
+    download_dir: /var/tmp/rpm_downloads
+    download_dependencies: true
+
+    package_list: >-
+      {{
+        lookup('file', package_list_path)
+        .splitlines()
+        | map('trim')
+        | reject('match','^#')
+        | reject('equalto','')
+        | list
+      }}
+
+  tasks:
+    - name: Ensure dnf download plugin is installed
+      become: yes
+      ansible.builtin.dnf:
+        name: dnf-plugins-core
+        state: present
+
+    - name: Create directory for downloads
+      become: yes
+      ansible.builtin.file:
+        path: "{{ download_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Make sure DNF metadata is up to date
+      become: yes
+      ansible.builtin.command: dnf -y makecache
+      changed_when: false
+
+    - name: Download the latest RPMs (one by one)
+      become: yes   # <<––– ADD HERE –– this fixes the “not root” repo error
+      ansible.builtin.command: >
+        dnf -y download
+        {{ '--resolve' if download_dependencies else '' }}
+        --downloaddir={{ download_dir }}
+        {{ item }}
+      loop: "{{ package_list }}"
+      changed_when: true
+
+    - name: Install/Update to latest versions
+      become: yes
+      ansible.builtin.dnf:
+        name: "{{ package_list }}"
+        state: latest

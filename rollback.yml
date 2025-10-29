@@ -1,0 +1,70 @@
+---
+- name: Roll back package installations locally (RHEL 8/9)
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+
+  vars:
+    # Path to same package list used in the install playbook
+    package_list_path: /home/entds.ngisn.com/4n64322/ansible/rpmlist.txt
+    rollback_log: /var/tmp/rollback_removed_packages.log
+
+  tasks:
+    - name: Read package list
+      set_fact:
+        pkgs_raw: "{{ lookup('file', package_list_path) }}"
+
+    - name: Normalize package list
+      set_fact:
+        pkgs: >-
+          {{
+            pkgs_raw.splitlines()
+            | map('trim')
+            | reject('match', '^#')
+            | reject('equalto', '')
+            | list
+          }}
+
+    - name: Show packages targeted for rollback
+      debug:
+        msg: "{{ pkgs }}"
+
+    - name: Check which packages are installed
+      ansible.builtin.shell: >
+        rpm -q {{ item }}
+      register: pkg_status
+      loop: "{{ pkgs }}"
+      ignore_errors: true
+
+    - name: Filter installed packages
+      set_fact:
+        installed_pkgs: "{{ pkg_status.results
+          | selectattr('rc', 'eq', 0)
+          | map(attribute='item')
+          | list }}"
+
+    - name: Remove installed packages
+      ansible.builtin.dnf:
+        name: "{{ installed_pkgs }}"
+        state: absent
+      register: removal
+      when: installed_pkgs | length > 0
+
+    - name: Log removed packages
+      ansible.builtin.copy:
+        dest: "{{ rollback_log }}"
+        content: |
+          Rollback run: {{ ansible_date_time.date }} {{ ansible_date_time.time }}
+          Removed packages:
+          {% for p in installed_pkgs %}
+          - {{ p }}
+          {% endfor %}
+        mode: "0644"
+      when: installed_pkgs | length > 0
+
+    - name: Notify completion
+      debug:
+        msg: >
+          Rollback complete. {{ installed_pkgs | length }} packages removed.
+          See {{ rollback_log }} for details.

@@ -1,0 +1,158 @@
+//@version=5
+indicator("H4 H&S / Inverse H&S Scanner (Pairs Table)", overlay=false, timeframe="240", max_lines_count=500, max_labels_count=500)
+
+// ====== Settings ======
+hsType     = input.string("Both", "Pattern", options=["Head & Shoulders","Inverse H&S","Both"])
+pivotLen   = input.int(5, "Pivot len (swings)", minval=2)
+symmTolPct = input.float(30.0, "Shoulder height symmetry tolerance (%)", minval=5, maxval=100)
+minHeadPct = input.float(10.0, "Head above shoulder min (%) (abs)", minval=5, maxval=200)
+neckSlope  = input.float(0.5, "Max neckline slope (% of price)", minval=0.0, maxval=5.0)
+confirmBar = input.int(1, "Bars to confirm breakout", minval=0, maxval=3)
+requireRet = input.bool(true, "Require retest after breakout")
+showOnlyHits = input.bool(true, "Show only pairs with signal")
+
+// Alert options
+alertOnBreak = input.bool(true, "Alert: Neckline Breakout")
+alertOnRetest= input.bool(true, "Alert: Neckline Retest")
+
+// ====== Universe ======
+// Replace provider prefix (e.g., "OANDA:", "FOREXCOM:", "FX_IDC:") per your data feed.
+syms = array.from(
+    "OANDA:EURUSD","OANDA:GBPUSD","OANDA:USDJPY","OANDA:USDCHF","OANDA:USDCAD","OANDA:AUDUSD","OANDA:NZDUSD",
+    "OANDA:EURGBP","OANDA:EURJPY","OANDA:EURAUD","OANDA:EURNZD","OANDA:EURCHF","OANDA:EURCAD",
+    "OANDA:GBPJPY","OANDA:GBPAUD","OANDA:GBPNZD","OANDA:GBPCHF","OANDA:GBPCAD",
+    "OANDA:AUDJPY","OANDA:AUDNZD","OANDA:AUDCAD","OANDA:AUDCHF",
+    "OANDA:NZDJPY","OANDA:NZDCAD","OANDA:NZDCHF",
+    "OANDA:CADJPY","OANDA:CADCHF","OANDA:CHFJPY",
+    // Add more exotics if desired:
+    "OANDA:USDSEK","OANDA:USDNOK","OANDA:USDSGD","OANDA:USDZAR","OANDA:USDMXN"
+)
+
+// ====== Utilities ======
+float pctDiff(float a, float b) => math.abs(a-b)/((a+b)/2.0)*100.0
+float pctAbove(float head, float shoulder) => (head - shoulder)/shoulder*100.0
+bool  smallSlope(float a, float b, float px) => math.abs(a-b)/px*100.0 <= neckSlope
+
+// Swing points
+swingHigh(src, len) => ta.pivothigh(src, len, len)
+swingLow(src, len)  => ta.pivotlow(src, len, len)
+
+// Detect H&S (top) or Inverse (bottom) using last few swings
+detectHS(open_, high_, low_, close_) =>
+    shL  = swingHigh(high_, pivotLen)
+    sl1  = swingLow(low_,  pivotLen)
+    shH  = swingHigh(high_, pivotLen)  // head candidate
+    sl2  = swingLow(low_,  pivotLen)
+    shR  = swingHigh(high_, pivotLen)
+
+    // We’ll walk recent bars to collect last 5 pivots in order: L-shoulder high, valley, Head high, valley, R-shoulder high
+    // For inverse, flip roles of highs/lows.
+    // To keep efficient, we rely on relative comparisons near recent pivots rather than a full pivot queue.
+
+    // Get recent pivot values (last occurrences)
+    var float lsh = na, var float v1 = na, var float head = na, var float v2 = na, var float rsh = na
+    lsh := ta.valuewhen(shL, high_[pivotLen], 2)
+    v1  := ta.valuewhen(sl1, low_[pivotLen], 2)
+    head:= ta.valuewhen(shH, high_[pivotLen], 1)
+    v2  := ta.valuewhen(sl2, low_[pivotLen], 1)
+    rsh := ta.valuewhen(shR, high_[pivotLen], 0)
+
+    // Neckline candidates: valleys v1 and v2
+    bool valid = na(lsh) or na(v1) or na(head) or na(v2) or na(rsh) ? false :
+         head > lsh and head > rsh and           // head above shoulders
+         pctDiff(lsh, rsh) <= symmTolPct and     // shoulder heights similar
+         pctAbove(head, math.max(lsh, rsh)) >= minHeadPct and // head sufficiently above
+         smallSlope(v1, v2, close_)              // neckline roughly flat/slight slope
+
+    // Breakout: close below neckline (avg of v1 & v2) with confirm bars
+    neck = na(v1) or na(v2) ? na : (v1+v2)/2.0
+    broke = valid and not na(neck) and ta.barssince(close_ < neck) == confirmBar
+    retest = broke and requireRet ? ta.lowest(close_, pivotLen) >= neck and close_ < neck : true
+
+    [valid, neck, broke and retest]
+
+// Inverse H&S detection (flip highs/lows)
+detectInvHS(open_, high_, low_, close_) =>
+    slL  = swingLow(low_,  pivotLen)
+    sh1  = swingHigh(high_, pivotLen)
+    slH  = swingLow(low_,  pivotLen)
+    sh2  = swingHigh(high_, pivotLen)
+    slR  = swingLow(low_,  pivotLen)
+
+    var float lsh = na, var float p1 = na, var float head = na, var float p2 = na, var float rsh = na
+    lsh := ta.valuewhen(slL, low_[pivotLen], 2)
+    p1  := ta.valuewhen(sh1, high_[pivotLen], 2)
+    head:= ta.valuewhen(slH, low_[pivotLen], 1)
+    p2  := ta.valuewhen(sh2, high_[pivotLen], 1)
+    rsh := ta.valuewhen(slR, low_[pivotLen], 0)
+
+    bool valid = na(lsh) or na(p1) or na(head) or na(p2) or na(rsh) ? false :
+         head < lsh and head < rsh and
+         pctDiff(lsh, rsh) <= symmTolPct and
+         pctAbove(math.max(lsh, rsh), head) >= minHeadPct and
+         smallSlope(p1, p2, close_)
+
+    neck = na(p1) or na(p2) ? na : (p1+p2)/2.0
+    broke = valid and not na(neck) and ta.barssince(close_ > neck) == confirmBar
+    retest = broke and requireRet ? ta.highest(close_, pivotLen) <= neck and close_ > neck : true
+
+    [valid, neck, broke and retest]
+
+// ====== Scan & Table ======
+var table t = table.new(position.top_right, 4, 100, border_width=1)
+var int row = 0
+if barstate.isfirst
+    table.cell(t, 0, 0, "Symbol", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(t, 1, 0, "Pattern", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(t, 2, 0, "Neckline", text_color=color.white, bgcolor=color.new(color.blue, 0))
+    table.cell(t, 3, 0, "Signal", text_color=color.white, bgcolor=color.new(color.blue, 0))
+
+row := 1
+anyHit = false
+
+for i = 0 to array.size(syms)-1
+    sym = array.get(syms, i)
+    o = request.security(sym, "240", open)
+    h = request.security(sym, "240", high)
+    l = request.security(sym, "240", low)
+    c = request.security(sym, "240", close)
+
+    [isHS, neckHS, sigHS]     = detectHS(o,h,l,c)
+    [isInv, neckInv, sigInv]  = detectInvHS(o,h,l,c)
+
+    patt = na
+    neck = na
+    sig  = false
+
+    if hsType == "Head & Shoulders" or hsType == "Both"
+        patt := isHS ? "H&S" : patt
+        neck := isHS ? neckHS : neck
+        sig  := isHS and sigHS ? true : sig
+    if hsType == "Inverse H&S" or hsType == "Both"
+        // Prefer an actual signal; otherwise record whichever exists
+        if isInv and sigInv
+            patt := "Inv H&S"
+            neck := neckInv
+            sig  := true
+        else if na(patt) and isInv
+            patt := "Inv H&S"
+            neck := neckInv
+
+    showRow = showOnlyHits ? (sig or (isHS or isInv)) : true
+
+    if showRow
+        anyHit := anyHit or (sig or (isHS or isInv))
+        bg = sig ? color.new(color.green, 75) : (na(patt) ? color.new(color.red, 85) : color.new(color.yellow, 80))
+        table.cell(t, 0, row, str.tostring(sym))
+        table.cell(t, 1, row, na(patt) ? "—" : patt)
+        table.cell(t, 2, row, na(neck) ? "—" : str.tostring(neck, format.mintick))
+        table.cell(t, 3, row, sig ? "BREAK/RETEST" : (na(patt) ? "No pattern" : "Forming"), bgcolor=bg)
+        row += 1
+
+// ====== Alerts ======
+hasSignal = anyHit
+if alertOnBreak or alertOnRetest
+    alertcondition(hasSignal, title="H&S Scanner Signal", message="One or more pairs signaled a neckline break/retest on H4.")
+
+// Plot a tiny marker to allow adding an alert on this script
+plotchar(hasSignal, char="●", location=location.top, size=size.tiny, color=color.green)

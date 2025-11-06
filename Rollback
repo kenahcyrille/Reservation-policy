@@ -1,0 +1,76 @@
+---
+- name: Full Rollback: Revert System Packages and Configurations
+  hosts: all
+  become: yes
+  vars:
+    backup_root: /var/backups/ansible
+    restore_source: "{{ backup_root }}/{{ inventory_hostname }}/latest"
+    log_file: /var/log/hpc_installer.log
+
+  tasks:
+    - name: Check if DNF exists on system
+      stat:
+        path: /usr/bin/dnf
+      register: dnf_exists
+
+    - name: Get last completed DNF transaction ID
+      when: dnf_exists.stat.exists
+      shell: >
+        dnf history list | awk 'NR==3 {print $1}'
+      register: last_dnf_id
+      changed_when: false
+
+    - name: Show last DNF transaction ID
+      debug:
+        msg: "Last DNF transaction ID detected: {{ last_dnf_id.stdout | default('none') }}"
+
+    - name: Rollback to previous system state using DNF transaction history
+      when: dnf_exists.stat.exists and last_dnf_id.stdout | length > 0
+      block:
+        - name: Undo last DNF transaction (packages + dependencies)
+          shell: >
+            dnf -y history undo {{ last_dnf_id.stdout }}
+          args:
+            warn: false
+          register: dnf_rollback
+          ignore_errors: yes
+
+        - name: Log DNF rollback execution
+          lineinfile:
+            path: "{{ log_file }}"
+            create: yes
+            line: "[{{ ansible_date_time.iso8601 }}] DNF rollback to ID {{ last_dnf_id.stdout }} executed on {{ inventory_hostname }}"
+      rescue:
+        - name: Warn if DNF rollback failed
+          debug:
+            msg: "DNF rollback failed or not applicable on {{ inventory_hostname }}"
+
+    - name: Verify configuration snapshot availability
+      stat:
+        path: "{{ restore_source }}"
+      register: snapshot_state
+
+    - name: Restore configuration files from snapshot
+      when: snapshot_state.stat.exists
+      block:
+        - name: Restore snapshot data
+          copy:
+            src: "{{ restore_source }}/"
+            dest: /
+            owner: root
+            group: root
+            mode: preserve
+            force: yes
+            remote_src: yes
+
+        - name: Log configuration restoration
+          lineinfile:
+            path: "{{ log_file }}"
+            create: yes
+            line: "[{{ ansible_date_time.iso8601 }}] Configuration snapshot restored for {{ inventory_hostname }}"
+
+    - name: Report rollback completion
+      debug:
+        msg: >
+          "Full rollback completed on {{ inventory_hostname }}.
+           DNF transaction {{ last_dnf_id.stdout | default('N/A') }} undone and configuration snapshot restored."

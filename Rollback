@@ -1,11 +1,12 @@
 ---
-- name: Full Rollback: Revert System Packages and Configurations
+- name: Full Rollback: DNF Transaction + Configuration Snapshot
   hosts: all
   become: yes
   vars:
     backup_root: /var/backups/ansible
     restore_source: "{{ backup_root }}/{{ inventory_hostname }}/latest"
     log_file: /var/log/hpc_installer.log
+    target_dnf_id: ""        # optional override: ansible-playbook rollback.yml -e "target_dnf_id=25"
 
   tasks:
     - name: Check if DNF exists on system
@@ -13,33 +14,40 @@
         path: /usr/bin/dnf
       register: dnf_exists
 
-    - name: Get last completed DNF transaction ID
+    - name: Determine DNF transaction ID to use
       when: dnf_exists.stat.exists
-      shell: >
-        dnf history list | awk 'NR==3 {print $1}'
-      register: last_dnf_id
-      changed_when: false
-
-    - name: Show last DNF transaction ID
-      debug:
-        msg: "Last DNF transaction ID detected: {{ last_dnf_id.stdout | default('none') }}"
-
-    - name: Rollback to previous system state using DNF transaction history
-      when: dnf_exists.stat.exists and last_dnf_id.stdout | length > 0
       block:
-        - name: Undo last DNF transaction (packages + dependencies)
+        - name: Get last completed DNF transaction ID
           shell: >
-            dnf -y history undo {{ last_dnf_id.stdout }}
+            dnf history list | awk 'NR==3 {print $1}'
+          register: dnf_last_id
+          changed_when: false
+
+        - name: Set rollback target ID (manual override or latest)
+          set_fact:
+            rollback_dnf_id: "{{ target_dnf_id | default(dnf_last_id.stdout, true) }}"
+
+        - name: Display chosen DNF transaction ID
+          debug:
+            msg: "Rollback target DNF transaction ID for {{ inventory_hostname }}: {{ rollback_dnf_id }}"
+
+    - name: Rollback DNF packages to chosen transaction
+      when: dnf_exists.stat.exists and rollback_dnf_id | length > 0
+      block:
+        - name: Execute DNF rollback
+          shell: >
+            dnf -y history undo {{ rollback_dnf_id }}
           args:
             warn: false
           register: dnf_rollback
           ignore_errors: yes
 
-        - name: Log DNF rollback execution
+        - name: Log DNF rollback
           lineinfile:
             path: "{{ log_file }}"
             create: yes
-            line: "[{{ ansible_date_time.iso8601 }}] DNF rollback to ID {{ last_dnf_id.stdout }} executed on {{ inventory_hostname }}"
+            line: "[{{ ansible_date_time.iso8601 }}] DNF rollback to ID {{ rollback_dnf_id }} executed on {{ inventory_hostname }}"
+
       rescue:
         - name: Warn if DNF rollback failed
           debug:
@@ -50,10 +58,10 @@
         path: "{{ restore_source }}"
       register: snapshot_state
 
-    - name: Restore configuration files from snapshot
+    - name: Restore configuration snapshot
       when: snapshot_state.stat.exists
       block:
-        - name: Restore snapshot data
+        - name: Restore configuration files
           copy:
             src: "{{ restore_source }}/"
             dest: /
@@ -69,8 +77,8 @@
             create: yes
             line: "[{{ ansible_date_time.iso8601 }}] Configuration snapshot restored for {{ inventory_hostname }}"
 
-    - name: Report rollback completion
+    - name: Confirm rollback completion
       debug:
         msg: >
-          "Full rollback completed on {{ inventory_hostname }}.
-           DNF transaction {{ last_dnf_id.stdout | default('N/A') }} undone and configuration snapshot restored."
+          "Rollback completed on {{ inventory_hostname }}.
+           DNF transaction {{ rollback_dnf_id | default('N/A') }} undone (if applicable) and configuration snapshot restored."

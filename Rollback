@@ -2,11 +2,12 @@
 - name: Full Rollback: DNF Transaction + Configuration Snapshot
   hosts: all
   become: yes
+
   vars:
     backup_root: /var/backups/ansible
     restore_source: "{{ backup_root }}/{{ inventory_hostname }}/latest"
     log_file: /var/log/hpc_installer.log
-    target_dnf_id: ""        # optional override: ansible-playbook rollback.yml -e "target_dnf_id=25"
+    target_dnf_id: ""    # optional override: ansible-playbook rollback.yml -e "target_dnf_id=25"
 
   tasks:
     - name: Check if DNF exists on system
@@ -18,8 +19,8 @@
       when: dnf_exists.stat.exists
       block:
         - name: Get last completed DNF transaction ID
-          shell: >
-            dnf history list | awk 'NR==3 {print $1}'
+          shell: |
+            dnf history list | awk "NR==3 {print \$1}"
           register: dnf_last_id
           changed_when: false
 
@@ -35,7 +36,7 @@
       when: dnf_exists.stat.exists and rollback_dnf_id | length > 0
       block:
         - name: Execute DNF rollback
-          shell: >
+          shell: |
             dnf -y history undo {{ rollback_dnf_id }}
           args:
             warn: false
@@ -80,5 +81,5 @@
     - name: Confirm rollback completion
       debug:
         msg: >
-          "Rollback completed on {{ inventory_hostname }}.
-           DNF transaction {{ rollback_dnf_id | default('N/A') }} undone (if applicable) and configuration snapshot restored."
+          Rollback completed on {{ inventory_hostname }}.
+          DNF transaction {{ rollback_dnf_id | default('N/A') }} undone (if applicable) and configuration snapshot restored.

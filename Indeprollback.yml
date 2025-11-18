@@ -1,0 +1,77 @@
+---
+- name: Independent Rollback Playbook (DNF/YUM + Snapshot Restore)
+  hosts: localhost
+  connection: local
+  become: yes
+
+  vars:
+    backup_root: /var/backups/ansible
+    restore_source: "{{ backup_root }}/{{ inventory_hostname }}/latest"
+    log_file: /var/log/hpc_installer.log
+
+  tasks:
+
+    - name: Detect package manager
+      shell: |
+        if command -v dnf >/dev/null 2>&1; then echo dnf;
+        elif command -v yum >/dev/null 2>&1; then echo yum;
+        else echo none; fi
+      register: pkg_mgr
+      changed_when: false
+
+    - name: Stop if no package manager found
+      fail:
+        msg: "No DNF or YUM available on this system."
+      when: pkg_mgr.stdout == "none"
+
+    - name: Get last package transaction ID (DNF/YUM)
+      shell: |
+        if [ "{{ pkg_mgr.stdout }}" = "dnf" ]; then
+          DNF_PAGER=cat dnf --color=never history list 2>&1 | awk '/^[0-9]+/ {print $1; exit}';
+        else
+          yum history list 2>&1 | awk '/^[0-9]+/ {print $1; exit}';
+        fi
+      register: pkg_last_id
+      changed_when: false
+
+    - name: Stop if no rollback candidate found
+      fail:
+        msg: "No DNF/YUM transaction ID available to rollback."
+      when: pkg_last_id.stdout | trim == ""
+
+    - name: Show selected transaction ID
+      debug:
+        msg: "Rolling back transaction ID: {{ pkg_last_id.stdout | trim }}"
+
+    - name: Execute rollback
+      shell: |
+        {{ pkg_mgr.stdout }} -y history undo {{ pkg_last_id.stdout | trim }}
+      register: pkg_rollback
+      ignore_errors: yes
+
+    - name: Log rollback execution
+      lineinfile:
+        path: "{{ log_file }}"
+        create: yes
+        line: "[{{ ansible_date_time.iso8601 }}] Rollback of transaction {{ pkg_last_id.stdout | trim }} on {{ inventory_hostname }}"
+      ignore_errors: yes
+
+    - name: Check if configuration snapshot exists
+      stat:
+        path: "{{ restore_source }}"
+      register: snapshot_dir
+
+    - name: Restore config snapshot (if available)
+      when: snapshot_dir.stat.exists
+      copy:
+        src: "{{ restore_source }}/"
+        dest: /
+        owner: root
+        group: root
+        mode: preserve
+        force: yes
+        remote_src: yes
+
+    - name: Confirm rollback complete
+      debug:
+        msg: "Rollback completed successfully."

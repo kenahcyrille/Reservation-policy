@@ -1,0 +1,93 @@
+---
+- name: HPC Install Playbook (Snapshot + Install from Text File)
+  hosts: localhost
+  connection: local
+  become: yes
+
+  vars:
+    snapshot_root: /scratch/snapshots
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+    snapshot_dir: "{{ snapshot_root }}/{{ inventory_hostname }}/{{ timestamp }}"
+
+    # Paths to snapshot before installing
+    snapshot_paths:
+      - /etc/
+      - /usr/local/
+      - /opt/
+      - /etc/profile.d/
+
+    # Read package list from text file
+    package_list: "{{ lookup('file', 'packages.txt').split('\n') | reject('equalto', '') | list }}"
+
+  tasks:
+
+    ####################################################################
+    # 1) CREATE SNAPSHOT DIRECTORY
+    ####################################################################
+    - name: Create snapshot directory
+      file:
+        path: "{{ snapshot_dir }}"
+        state: directory
+        mode: "0755"
+
+    ####################################################################
+    # 2) SNAPSHOT IMPORTANT SYSTEM DIRECTORIES
+    ####################################################################
+    - name: Snapshot system configuration directories
+      synchronize:
+        src: "{{ item }}"
+        dest: "{{ snapshot_dir }}/"
+        recursive: yes
+      loop: "{{ snapshot_paths }}"
+      ignore_errors: yes
+
+    ####################################################################
+    # 3) CREATE "LATEST" SYMLINK FOR EASY ROLLBACK
+    ####################################################################
+    - name: Mark this snapshot as the latest
+      file:
+        src: "{{ snapshot_dir }}"
+        dest: "{{ snapshot_root }}/{{ inventory_hostname }}/latest"
+        state: link
+        force: yes
+
+    - name: Display snapshot location
+      debug:
+        msg: "System snapshot created at {{ snapshot_dir }}"
+
+    ####################################################################
+    # 4) DETECT PACKAGE MANAGER
+    ####################################################################
+    - name: Detect package manager (DNF/YUM)
+      shell: |
+        if command -v dnf >/dev/null 2>&1; then echo dnf;
+        elif command -v yum >/dev/null 2>&1; then echo yum;
+        else echo none; fi
+      register: pkg_mgr
+      changed_when: false
+
+    - name: Stop if unsupported package manager
+      fail:
+        msg: "No DNF or YUM package manager found on this system."
+      when: pkg_mgr.stdout == "none"
+
+    ####################################################################
+    # 5) INSTALL PACKAGES FROM TEXT FILE
+    ####################################################################
+    - name: Install packages from packages.txt
+      shell: |
+        {{ pkg_mgr.stdout }} -y install {{ package_list | join(' ') }}
+      register: install_result
+
+    - name: Show installation results
+      debug:
+        var: install_result.stdout
+
+    ####################################################################
+    # 6) LOG INSTALL EVENT
+    ####################################################################
+    - name: Log install event
+      lineinfile:
+        path: /var/log/hpc_installer.log
+        create: yes
+        line: "[{{ ansible_date_time.iso8601 }}] Installed packages: {{ package_list | join(', ') }} — Snapshot at {{ snapshot_dir }}"
